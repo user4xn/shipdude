@@ -138,7 +138,57 @@ Once active, click **📊 Open Monitoring Dashboard** on your project card to vi
 | Reverse Proxy | Caddy (auto-provisioned on VPS) |
 | Binary Size | < 30MB |
 
+### Code layout
+
+The backend follows a layered clean architecture:
+
+```
+internal/
+  app/
+    github/     handler.go · service.go · router.go   (OAuth, repos, settings)
+    vps/        handler.go · service.go · router.go   (probe, provision)
+    project/    handler.go · service.go · deploy.go   (deploy, hot-swap, telemetry)
+  dto/          request/response contracts (API shapes)
+  model/        persisted entities
+  repository/   one file per entity (server, project, setting)
+  db/           SQLite connection + AES-256 key management
+  factory/      dependency wiring
+  http/         router registration under /api/v1
+  middleware/   logging, recovery, CORS
+pkg/
+  client/       SSH + GitHub HTTP clients
+  crypto/       AES-GCM, SSH keygen, GitHub secret sealing
+  config/       configuration accessors
+  consts/       typed constants (settings, stack, jobs)
+  dbutil/       query scopes
+  socket/       background job hub + log fan-out
+  util/         errors, API envelope, env helpers
+```
+
+Every JSON endpoint returns the uniform envelope
+`{ "message": string, "status": int, "data": any }`; error responses also
+mirror the message into `"error"` for backward compatibility.
+
 ---
+
+## ⚙️ Environment Variables
+
+Copy [`example.env`](./example.env) to `.env` to override any default. Every
+variable is optional.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `APP_ENV` | `development` | Runtime environment label. |
+| `APP_PORT` | `8080` | HTTP port the portal listens on. |
+| `DB_PATH` | `./config/shipdude.db` | SQLite database path; the AES key is created beside it. |
+| `GITHUB_CLIENT_ID` | _(empty)_ | OAuth client ID fallback (prefer the settings UI). |
+| `GITHUB_CLIENT_SECRET` | _(empty)_ | OAuth client secret fallback. |
+| `GITHUB_OAUTH_TOKEN` | _(empty)_ | Personal access token fallback session. |
+| `DEFAULT_SSH_PORT` | `22` | SSH port used when a caller omits it. |
+| `DEFAULT_SSH_USER` | `root` | SSH user used when a caller omits it. |
+
+---
+
 
 ## ⚠️ Known Limitations
 
