@@ -38,7 +38,7 @@ func (s *service) performHotSwap(proj *model.Project, srv *model.Server, image s
 	s.authenticateRegistry(sshClient, proj, job)
 
 	job.AddLog(fmt.Sprintf("[Docker] Pulling image: %s...", image))
-	if err := client.RunCommandStream(sshClient, fmt.Sprintf("docker pull %q", image), func(line string) {
+	if err := client.RunCommandStream(sshClient, "docker pull "+shellQuote(image), func(line string) {
 		job.AddLog("[Docker] " + line)
 	}); err != nil {
 		return fmt.Errorf("docker pull failed: %w", err)
@@ -51,11 +51,11 @@ func (s *service) performHotSwap(proj *model.Project, srv *model.Server, image s
 	}
 
 	job.AddLog(fmt.Sprintf("[Docker] Removing pre-existing container %s if present...", newContainer))
-	_ = client.RunCommandStream(sshClient, fmt.Sprintf("docker rm -f %q", newContainer), func(string) {})
+	_ = client.RunCommandStream(sshClient, "docker rm -f "+shellQuote(newContainer), func(string) {})
 
 	job.AddLog(fmt.Sprintf("[Docker] Launching new container %s on port %d...", newContainer, targetPort))
-	runCmd := fmt.Sprintf("docker run -d --name %q --restart unless-stopped -p %d:%d -e PORT=%d %q",
-		newContainer, targetPort, proj.AppPort, proj.AppPort, image)
+	runCmd := fmt.Sprintf("docker run -d --name %s --restart unless-stopped -p %d:%d -e PORT=%d %s",
+		shellQuote(newContainer), targetPort, proj.AppPort, proj.AppPort, shellQuote(image))
 	if err := client.RunCommandStream(sshClient, runCmd, func(line string) {
 		job.AddLog("[Docker] " + line)
 	}); err != nil {
@@ -63,7 +63,7 @@ func (s *service) performHotSwap(proj *model.Project, srv *model.Server, image s
 	}
 
 	if err := s.waitHealthy(sshClient, targetPort, job); err != nil {
-		_ = client.RunCommandStream(sshClient, fmt.Sprintf("docker rm -f %q", newContainer), func(string) {})
+		_ = client.RunCommandStream(sshClient, "docker rm -f "+shellQuote(newContainer), func(string) {})
 		return err
 	}
 
@@ -90,13 +90,13 @@ func (s *service) performHotSwap(proj *model.Project, srv *model.Server, image s
 			_ = client.RunCommandStream(sshClient, restoreCmd, func(string) {})
 			_ = client.RunCommandStream(sshClient, "docker cp /var/lib/shipdude/caddy/Caddyfile shipdude-caddy:/etc/caddy/Caddyfile", func(string) {})
 		}
-		_ = client.RunCommandStream(sshClient, fmt.Sprintf("docker rm -f %q", newContainer), func(string) {})
+		_ = client.RunCommandStream(sshClient, "docker rm -f "+shellQuote(newContainer), func(string) {})
 		return fmt.Errorf("caddy reload failed; Caddyfile dipulihkan, container baru dibuang, container lama tetap melayani: %w", err)
 	}
 
 	if oldContainer != "" && oldContainer != newContainer {
 		job.AddLog(fmt.Sprintf("[Docker] Pruning old container %s...", oldContainer))
-		_ = client.RunCommandStream(sshClient, fmt.Sprintf("docker rm -f %q", oldContainer), func(string) {})
+		_ = client.RunCommandStream(sshClient, "docker rm -f "+shellQuote(oldContainer), func(string) {})
 	}
 
 	if err := s.project.UpdateActiveState(s.db(), proj.ID, targetPort, image); err != nil {
@@ -115,7 +115,7 @@ func (s *service) authenticateRegistry(sshClient *ssh.Client, proj *model.Projec
 	}
 
 	job.AddLog("[Docker] Authenticating with GitHub Container Registry (ghcr.io)...")
-	loginCmd := fmt.Sprintf("echo %q | docker login ghcr.io -u %q --password-stdin", token, owner)
+	loginCmd := fmt.Sprintf("echo %s | docker login ghcr.io -u %s --password-stdin", shellQuote(token), shellQuote(owner))
 	if err := client.RunCommandStream(sshClient, loginCmd, func(line string) {
 		if !strings.Contains(line, token) {
 			job.AddLog("[Docker] " + line)

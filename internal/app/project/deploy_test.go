@@ -151,13 +151,13 @@ func TestHotSwap_CaddyReloadFailureKeepsOldContainer(t *testing.T) {
 		t.Errorf("expected caddy reload error, got: %v", err)
 	}
 
-	if rec.contains(`rm -f "shipdude-my-website-8080"`) {
+	if rec.contains("rm -f 'shipdude-my-website-8080'") {
 		t.Error("container lama TIDAK boleh dihapus saat caddy reload gagal")
 	}
 	if !rec.contains("caddy reload") {
 		t.Error("reload caddy harus tetap dicoba")
 	}
-	if !rec.contains(`rm -f "shipdude-my-website-8081"`) {
+	if !rec.contains("rm -f 'shipdude-my-website-8081'") {
 		t.Error("container baru harus dibuang saat reload gagal (belum pernah menerima trafik)")
 	}
 	if !rec.contains("base64 -d | sudo tee /var/lib/shipdude/caddy/Caddyfile") {
@@ -181,10 +181,10 @@ func TestHotSwap_HealthCheck500Fails(t *testing.T) {
 	if rec.contains("caddy reload") {
 		t.Error("caddy tidak boleh direload kalau health check gagal")
 	}
-	if rec.contains(`rm -f "shipdude-my-website-8080"`) {
+	if rec.contains("rm -f 'shipdude-my-website-8080'") {
 		t.Error("container lama harus tetap hidup saat health check gagal")
 	}
-	if !rec.contains(`rm -f "shipdude-my-website-8081"`) {
+	if !rec.contains("rm -f 'shipdude-my-website-8081'") {
 		t.Error("container baru yang gagal sehat harus dibuang")
 	}
 }
@@ -201,7 +201,7 @@ func TestHotSwap_HealthyPromotesAndPrunes(t *testing.T) {
 	if !rec.contains("caddy reload") {
 		t.Error("caddy harus direload setelah health check lolos")
 	}
-	if !rec.contains(`rm -f "shipdude-my-website-8080"`) {
+	if !rec.contains("rm -f 'shipdude-my-website-8080'") {
 		t.Error("container lama harus dipangkas setelah reload sukses")
 	}
 
@@ -225,11 +225,30 @@ func TestHotSwap_QuotesShellArguments(t *testing.T) {
 		t.Fatalf("expected success, got: %v", err)
 	}
 
-	if !rec.contains(`docker pull "`+image+`"`) {
-		t.Error("docker pull harus memakai argumen yang di-quote")
+	if !rec.contains("docker pull '" + image + "'") {
+		t.Error("docker pull harus memakai argumen single-quote")
 	}
-	if !rec.contains(`--name "shipdude-my-website-8081"`) {
+	if !rec.contains("--name 'shipdude-my-website-8081'") {
 		t.Error("docker run harus meng-quote nama container")
+	}
+}
+
+// TestHotSwap_ImageBerbahayaTetapSatuArgumen memastikan quoting tidak bergantung
+// pada validator: image dengan "$(id)" harus tetap masuk sebagai satu argumen
+// literal, bukan perintah yang dieksekusi.
+func TestHotSwap_ImageBerbahayaTetapSatuArgumen(t *testing.T) {
+	svc, proj, srv, rec := setupHotSwap(t, "200", false)
+	job := socket.NewJob("test-quoting-danger")
+
+	if err := svc.performHotSwap(proj, srv, "evil:1$(id)", job); err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+
+	if !rec.contains("docker pull 'evil:1$(id)'") {
+		t.Error("image berbahaya harus di-single-quote supaya tidak dieksekusi shell")
+	}
+	if rec.contains(`docker pull "evil:1$(id)"`) {
+		t.Error("double quote tidak menghentikan command substitution")
 	}
 }
 
