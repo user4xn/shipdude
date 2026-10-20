@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -100,13 +101,31 @@ func serveConn(c net.Conn, config *ssh.ServerConfig) {
 					req.Reply(false, nil)
 					continue
 				}
-				ch.Write([]byte(commandResponse(string(req.Payload[4 : 4+req.Payload[3]]))))
+				out, status := mockResponse(string(req.Payload[4 : 4+req.Payload[3]]))
+				ch.Write([]byte(out))
 				req.Reply(true, nil)
-				ch.SendRequest("exit-status", false, make([]byte, 4))
+				payload := make([]byte, 4)
+				binary.BigEndian.PutUint32(payload, status)
+				ch.SendRequest("exit-status", false, payload)
 				return
 			}
 		}(requests, channel)
 	}
+}
+
+// mockCommandHook memungkinkan test tertentu mengganti balasan perintah SSH,
+// termasuk mensimulasikan exit status bukan nol (mis. `caddy reload` gagal).
+// Tanda tangan: func(cmd) (output string, exitStatus uint32, handled bool).
+var mockCommandHook func(cmd string) (string, uint32, bool)
+
+// mockResponse memilih balasan dari hook (kalau ada) atau dari tabel default.
+func mockResponse(cmd string) (string, uint32) {
+	if mockCommandHook != nil {
+		if out, status, ok := mockCommandHook(cmd); ok {
+			return out, status
+		}
+	}
+	return commandResponse(cmd), 0
 }
 
 func commandResponse(cmd string) string {

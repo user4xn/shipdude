@@ -93,6 +93,12 @@ func (s *service) FindOne(ctx context.Context, id int64) (*model.Project, error)
 
 // Deploy runs the one-click CI/CD setup pipeline in the background.
 func (s *service) Deploy(req DeployRequest, serverURL string) (string, error) {
+	// Validasi di depan: input buruk ditolak sebagai 400 dan tidak pernah
+	// menyentuh SSH, GitHub, maupun perintah shell di VPS target.
+	if err := ValidateDeployRequest(req); err != nil {
+		return "", err
+	}
+
 	token := req.GitHubToken
 	if token == "" {
 		token = s.github.OAuthToken(context.Background())
@@ -236,11 +242,14 @@ func (s *service) persistProject(serverID int64, req DeployRequest, job *socket.
 
 // Trigger reacts to a GitHub Actions completion by hot-swapping the image.
 func (s *service) Trigger(repo, sha string) (string, int64, error) {
-	if repo == "" {
-		return "", 0, util.NewBadRequestError("Missing parameter 'repo'", nil)
+	if err := ValidateRepoRef(repo); err != nil {
+		return "", 0, err
 	}
 	if sha == "" {
 		sha = "latest"
+	}
+	if err := ValidateSHA(sha); err != nil {
+		return "", 0, err
 	}
 
 	proj, err := s.project.FindOneByRepo(context.Background(), repo)
@@ -269,8 +278,8 @@ func (s *service) Trigger(repo, sha string) (string, int64, error) {
 
 // Rollback redeploys a previously pushed image in the background.
 func (s *service) Rollback(ctx context.Context, id int64, targetImage string) (string, error) {
-	if targetImage == "" {
-		return "", util.NewBadRequestError("Target image is required", nil)
+	if err := ValidateImageRef(targetImage); err != nil {
+		return "", err
 	}
 
 	proj, err := s.FindOne(ctx, id)
