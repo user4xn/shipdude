@@ -288,6 +288,51 @@ func TestHotSwap_AbortsWhenCaddyfileCaptureFails(t *testing.T) {
 	}
 }
 
+// TestHotSwap_ReportsRestoreFailure memastikan kegagalan menulis ulang Caddyfile
+// tidak ditelan: laporan harus menyebut pemulihan gagal beserta alasannya, bukan
+// mengaku "Caddyfile dipulihkan".
+func TestHotSwap_ReportsRestoreFailure(t *testing.T) {
+	svc, proj, srv, rec := setupHotSwap(t, "200", false)
+
+	writeCount := 0
+	mockCommandHook = func(cmd string) (string, uint32, bool) {
+		rec.record(cmd)
+		switch {
+		case strings.Contains(cmd, "sudo base64 -w0 /var/lib/shipdude/caddy/Caddyfile"):
+			return "IyBvbGQgY2FkZHlmaWxlCg==", 0, true
+		case strings.Contains(cmd, "curl -s -o /dev/null -w"):
+			return "200", 0, true
+		case strings.Contains(cmd, "caddy reload"):
+			return "caddy: reload failed\n", 1, true
+		case strings.Contains(cmd, "base64 -d | sudo tee /var/lib/shipdude/caddy/Caddyfile"):
+			// Penulisan pertama = Caddyfile baru (sukses), kedua = restore (gagal).
+			writeCount++
+			if writeCount > 1 {
+				return "tee: /var/lib/shipdude/caddy/Caddyfile: Input/output error\n", 1, true
+			}
+			return "", 0, true
+		default:
+			return "", 0, true
+		}
+	}
+
+	job := socket.NewJob("test-restore-fail")
+	err := svc.performHotSwap(proj, srv, "ghcr.io/user4xn/my-website:abcdef1", job)
+	if err == nil {
+		t.Fatal("expected deploy to fail when caddy reload fails")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "GAGAL") {
+		t.Errorf("laporan harus menyatakan pemulihan gagal, got: %v", err)
+	}
+	if !strings.Contains(msg, "Input/output error") {
+		t.Errorf("laporan harus memuat alasan kegagalan restore, got: %v", err)
+	}
+	if strings.Contains(msg, "Caddyfile dipulihkan") {
+		t.Errorf("laporan tidak boleh mengaku Caddyfile dipulihkan, got: %v", err)
+	}
+}
+
 // TestHotSwap_CaddyfileBelumAdaTetapDeploy memastikan file yang belum ada
 // (deploy pertama di VPS baru, atau file dihapus) tidak menggagalkan deploy:
 // tidak ada isi lama yang bisa hilang, jadi tidak ada yang perlu dicadangkan.

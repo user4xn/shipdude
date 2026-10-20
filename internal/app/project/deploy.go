@@ -85,12 +85,28 @@ func (s *service) performHotSwap(proj *model.Project, srv *model.Server, image s
 		// jadi ia dipulihkan ke isi sebelumnya (kalau tidak, reload berikutnya dari
 		// project lain akan mempromosikan container yang belum lolos), dan container
 		// baru dibuang karena belum pernah menerima trafik.
+		var restoreErr error
+		var restoreOutput strings.Builder
 		if previousCaddyfile != "" {
-			restoreCmd := fmt.Sprintf("echo '%s' | base64 -d | sudo tee /var/lib/shipdude/caddy/Caddyfile >/dev/null", previousCaddyfile)
-			_ = client.RunCommandStream(sshClient, restoreCmd, func(string) {})
-			_ = client.RunCommandStream(sshClient, "docker cp /var/lib/shipdude/caddy/Caddyfile shipdude-caddy:/etc/caddy/Caddyfile", func(string) {})
+			restoreCmd := fmt.Sprintf("echo %s | base64 -d | sudo tee %s >/dev/null", shellQuote(previousCaddyfile), caddyfilePath)
+			restoreErr = client.RunCommandStream(sshClient, restoreCmd, func(line string) {
+				// stderr ikut mengalir ke sini; simpan sebagai alasan kegagalan.
+				restoreOutput.WriteString(strings.TrimSpace(line) + " ")
+			})
+			if restoreErr == nil {
+				_ = client.RunCommandStream(sshClient, "docker cp "+caddyfilePath+" shipdude-caddy:"+caddyInContainer, func(string) {})
+			}
 		}
 		_ = client.RunCommandStream(sshClient, "docker rm -f "+shellQuote(newContainer), func(string) {})
+		if restoreErr != nil {
+			// Jangan mengaku sudah dipulihkan kalau penulisan cadangan gagal:
+			// Caddyfile di disk masih menunjuk container yang barusan dibuang.
+			reason := strings.TrimSpace(restoreOutput.String())
+			if reason == "" {
+				reason = restoreErr.Error()
+			}
+			return fmt.Errorf("caddy reload failed dan pemulihan Caddyfile ikut GAGAL (%s); Caddyfile di disk masih menunjuk container %s yang sudah dibuang, perlu dipulihkan manual: %w", reason, newContainer, err)
+		}
 		return fmt.Errorf("caddy reload failed; Caddyfile dipulihkan, container baru dibuang, container lama tetap melayani: %w", err)
 	}
 
