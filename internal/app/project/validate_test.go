@@ -156,6 +156,9 @@ func TestValidateDeployRequest(t *testing.T) {
 		"domain injection": ok(func(r *DeployRequest) { r.Domain = "a.com {\n}" }),
 		"empty name":       ok(func(r *DeployRequest) { r.ProjectName = "  " }),
 		"port too big":     ok(func(r *DeployRequest) { r.AppPort = 70000 }),
+		"port nol":         ok(func(r *DeployRequest) { r.AppPort = 0 }),
+		"port 65536":       ok(func(r *DeployRequest) { r.AppPort = 65536 }),
+		"port negatif":     ok(func(r *DeployRequest) { r.AppPort = -1 }),
 		"host injection":   ok(func(r *DeployRequest) { r.IPAddress = "1.2.3.4;id" }),
 		"user injection":   ok(func(r *DeployRequest) { r.SSHUser = "root;id" }),
 		"empty host":       ok(func(r *DeployRequest) { r.IPAddress = "" }),
@@ -163,6 +166,34 @@ func TestValidateDeployRequest(t *testing.T) {
 	for name, req := range cases {
 		if err := ValidateDeployRequest(req); err == nil {
 			t.Errorf("%s: expected rejection, but it passed", name)
+		}
+	}
+}
+
+// TestValidateDeployRequestPortBoundary memastikan batas port yang dipakai
+// konsisten dengan pesannya: 1 dan 65535 sah, 0 dan 65536 tidak.
+func TestValidateDeployRequestPortBoundary(t *testing.T) {
+	base := DeployRequest{
+		IPAddress:    "10.0.0.5",
+		SSHUser:      "deployer",
+		GitHubRepo:   "user4xn/shipdude",
+		GitHubBranch: "main",
+		ProjectName:  "my-website",
+		Domain:       "app.example.com",
+	}
+
+	for _, port := range []int{1, 80, 65535} {
+		req := base
+		req.AppPort = port
+		if err := ValidateDeployRequest(req); err != nil {
+			t.Errorf("port %d harus diterima, got: %v", port, err)
+		}
+	}
+	for _, port := range []int{0, -1, 65536} {
+		req := base
+		req.AppPort = port
+		if err := ValidateDeployRequest(req); err == nil {
+			t.Errorf("port %d harus ditolak", port)
 		}
 	}
 }

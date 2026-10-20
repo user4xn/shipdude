@@ -175,7 +175,7 @@ func ValidateDeployRequest(req DeployRequest) error {
 	if strings.TrimSpace(req.ProjectName) == "" {
 		return util.NewBadRequestError("Project name is required", nil)
 	}
-	if req.AppPort < 0 || req.AppPort > 65535 {
+	if req.AppPort < 1 || req.AppPort > 65535 {
 		return util.NewBadRequestError("Application port must be between 1 and 65535", nil)
 	}
 	return nil
