@@ -121,14 +121,18 @@ func setupHotSwap(t *testing.T, healthCode string, reloadFails bool) (*service, 
 }
 
 func TestIsHealthyStatus(t *testing.T) {
-	healthy := []string{"200", "204", "301", " 200 "}
+	healthy := []string{"200", "201", "202", "204", "301", "302", "399", " 200 ", "	204"}
 	for _, code := range healthy {
 		if !isHealthyStatus(code) {
 			t.Errorf("expected %q healthy", code)
 		}
 	}
 
-	unhealthy := []string{"", "000", "20", "abc", "404", "500", "502", "199"}
+	unhealthy := []string{
+		"", "000", "20", "abc", "404", "500", "502", "199", "100",
+		// panjang lebih dari 3 digit tidak boleh dipotong menjadi 2xx/3xx
+		"1200", "1200 ", "2000", "600", "999", "200ok", "2 0 0",
+	}
 	for _, code := range unhealthy {
 		if isHealthyStatus(code) {
 			t.Errorf("expected %q NOT healthy", code)

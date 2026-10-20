@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -151,20 +152,22 @@ var healthCheckAttempts = 30
 // isHealthyStatus menganggap sehat hanya status HTTP 2xx dan 3xx. Nilai kosong
 // atau "000" (curl gagal konek) berarti belum siap; status 4xx/5xx berarti
 // aplikasi hidup tapi rusak, dan itu tidak boleh dipromosikan ke produksi.
+//
+// Nilai harus tepat 3 digit angka dalam rentang status HTTP (100..599) — tanpa
+// pemotongan string, supaya "1200" atau "200ok" tidak lolos sebagai 200.
 func isHealthyStatus(raw string) bool {
 	code := strings.TrimSpace(raw)
-	if len(code) > 3 {
-		code = code[len(code)-3:]
-	}
 	if len(code) != 3 {
 		return false
 	}
-	for i := 0; i < 3; i++ {
-		if code[i] < '0' || code[i] > '9' {
-			return false
-		}
+	status, err := strconv.Atoi(code)
+	if err != nil {
+		return false
 	}
-	return code[0] == '2' || code[0] == '3'
+	if status < 100 || status > 599 {
+		return false
+	}
+	return status >= 200 && status < 400
 }
 
 func (s *service) waitHealthy(sshClient *ssh.Client, port int, job *socket.Job) error {
