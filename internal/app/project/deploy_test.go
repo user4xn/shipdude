@@ -97,6 +97,8 @@ func setupHotSwap(t *testing.T, healthCode string, reloadFails bool) (*service, 
 	withMockHook(t, func(cmd string) (string, uint32, bool) {
 		rec.record(cmd)
 		switch {
+		case strings.Contains(cmd, "sudo cat /var/lib/shipdude/caddy/Caddyfile"):
+			return "IyBvbGQgY2FkZHlmaWxlCg==", 0, true // base64("# old caddyfile\n")
 		case strings.Contains(cmd, "curl -s -o /dev/null -w"):
 			return healthCode, 0, true
 		case strings.Contains(cmd, "caddy reload"):
@@ -228,5 +230,36 @@ func TestHotSwap_QuotesShellArguments(t *testing.T) {
 	}
 	if !rec.contains(`--name "shipdude-my-website-8081"`) {
 		t.Error("docker run harus meng-quote nama container")
+	}
+}
+
+// TestHotSwap_AbortsWhenCaddyfileCaptureFails menutup celah yang ditemukan QA:
+// kalau isi Caddyfile lama tidak bisa dibaca, jangan menulis yang baru sama
+// sekali, karena kegagalan reload tidak akan bisa dipulihkan.
+func TestHotSwap_AbortsWhenCaddyfileCaptureFails(t *testing.T) {
+	svc, proj, srv, rec := setupHotSwap(t, "200", false)
+
+	mockCommandHook = func(cmd string) (string, uint32, bool) {
+		rec.record(cmd)
+		switch {
+		case strings.Contains(cmd, "sudo cat /var/lib/shipdude/caddy/Caddyfile"):
+			return "permission denied\n", 1, true
+		case strings.Contains(cmd, "curl -s -o /dev/null -w"):
+			return "200", 0, true
+		default:
+			return "", 0, true
+		}
+	}
+
+	job := socket.NewJob("test-capture-fail")
+	err := svc.performHotSwap(proj, srv, "ghcr.io/user4xn/my-website:abcdef1", job)
+	if err == nil {
+		t.Fatal("expected deploy to abort when Caddyfile backup cannot be read")
+	}
+	if !strings.Contains(err.Error(), "Caddyfile") {
+		t.Errorf("expected Caddyfile error, got: %v", err)
+	}
+	if rec.contains("base64 -d | sudo tee /var/lib/shipdude/caddy/Caddyfile") {
+		t.Error("Caddyfile tidak boleh ditulis kalau cadangan gagal diambil")
 	}
 }

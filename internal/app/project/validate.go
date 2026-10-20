@@ -131,7 +131,12 @@ func ValidateHost(host string) error {
 	if host == "" {
 		return util.NewBadRequestError("Host is required", nil)
 	}
-	if net.ParseIP(host) != nil {
+	// IPv6 dalam bentuk bracket ([::1]) lazim dipakai di URL/konfigurasi.
+	bare := strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	if net.ParseIP(bare) != nil {
+		return nil
+	}
+	if strings.EqualFold(host, "localhost") {
 		return nil
 	}
 	if len(host) <= maxDomainLen && domainPattern.MatchString(strings.ToLower(host)) {

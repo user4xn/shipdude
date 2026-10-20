@@ -201,10 +201,16 @@ func (s *service) regenerateCaddyfile(sshClient *ssh.Client, srv *model.Server, 
 	}
 
 	// Simpan isi lama (base64) supaya bisa dipulihkan kalau reload gagal.
+	// Kalau isi lama tidak terbaca, jangan menulis Caddyfile baru sama sekali:
+	// tanpa cadangan, kegagalan reload akan meninggalkan konfigurasi menunjuk
+	// container yang sudah dibuang.
 	var previous string
-	_ = client.RunCommandStream(sshClient, "sudo cat /var/lib/shipdude/caddy/Caddyfile 2>/dev/null | base64 -w0", func(line string) {
+	captureErr := client.RunCommandStream(sshClient, "sudo cat /var/lib/shipdude/caddy/Caddyfile 2>/dev/null | base64 -w0", func(line string) {
 		previous += strings.TrimSpace(line)
 	})
+	if captureErr != nil || previous == "" {
+		return "", fmt.Errorf("failed to capture existing Caddyfile; refusing to overwrite without a backup: %w", captureErr)
+	}
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(client.RenderCaddyfile(cfg)))
 	writeCmd := fmt.Sprintf("echo '%s' | base64 -d | sudo tee /var/lib/shipdude/caddy/Caddyfile >/dev/null", encoded)

@@ -234,7 +234,7 @@ func TestValidPayloadStillAccepted(t *testing.T) {
 }
 
 func TestValidateHost(t *testing.T) {
-	valid := []string{"127.0.0.1", "10.0.0.5", "::1", "vps.example.com", "2001:db8::1"}
+	valid := []string{"127.0.0.1", "10.0.0.5", "::1", "vps.example.com", "2001:db8::1", "localhost", "[::1]"}
 	for _, h := range valid {
 		if err := ValidateHost(h); err != nil {
 			t.Errorf("expected %q valid, got: %v", h, err)
