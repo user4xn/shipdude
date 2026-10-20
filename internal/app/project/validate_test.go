@@ -50,6 +50,7 @@ func TestValidateImageRef(t *testing.T) {
 		"ghcr.io/user4xn/app:latest",
 		"ghcr.io/user4xn/app",
 		"nginx:1.25",
+		"ghcr.io/user4xn/app@sha256:" + strings.Repeat("a", 64),
 	}
 	for _, ref := range valid {
 		if err := ValidateImageRef(ref); err != nil {
@@ -75,7 +76,7 @@ func TestValidateImageRef(t *testing.T) {
 }
 
 func TestValidateGitRef(t *testing.T) {
-	valid := []string{"main", "feature/x-1", "release/v1.2.3", "fix_deploy"}
+	valid := []string{"main", "feature/x-1", "release/v1.2.3", "fix_deploy", "feature/x+y"}
 	for _, ref := range valid {
 		if err := ValidateGitRef(ref); err != nil {
 			t.Errorf("expected %q valid, got error: %v", ref, err)
@@ -132,6 +133,8 @@ func TestValidateDomain(t *testing.T) {
 
 func TestValidateDeployRequest(t *testing.T) {
 	base := DeployRequest{
+		IPAddress:    "10.0.0.5",
+		SSHUser:      "deployer",
 		GitHubRepo:   "user4xn/shipdude",
 		GitHubBranch: "main",
 		ProjectName:  "my-website",
@@ -142,12 +145,20 @@ func TestValidateDeployRequest(t *testing.T) {
 		t.Fatalf("expected baseline request valid, got: %v", err)
 	}
 
+	ok := func(mut func(*DeployRequest)) DeployRequest {
+		r := base
+		mut(&r)
+		return r
+	}
 	cases := map[string]DeployRequest{
-		"repo injection":   {GitHubRepo: "x;id", GitHubBranch: "main", ProjectName: "p", AppPort: 8080},
-		"branch injection": {GitHubRepo: "user4xn/shipdude", GitHubBranch: "main;id", ProjectName: "p", AppPort: 8080},
-		"domain injection": {GitHubRepo: "user4xn/shipdude", GitHubBranch: "main", ProjectName: "p", AppPort: 8080, Domain: "a.com {\n}"},
-		"empty name":       {GitHubRepo: "user4xn/shipdude", GitHubBranch: "main", ProjectName: "  ", AppPort: 8080},
-		"port too big":     {GitHubRepo: "user4xn/shipdude", GitHubBranch: "main", ProjectName: "p", AppPort: 70000},
+		"repo injection":   ok(func(r *DeployRequest) { r.GitHubRepo = "x;id" }),
+		"branch injection": ok(func(r *DeployRequest) { r.GitHubBranch = "main;id" }),
+		"domain injection": ok(func(r *DeployRequest) { r.Domain = "a.com {\n}" }),
+		"empty name":       ok(func(r *DeployRequest) { r.ProjectName = "  " }),
+		"port too big":     ok(func(r *DeployRequest) { r.AppPort = 70000 }),
+		"host injection":   ok(func(r *DeployRequest) { r.IPAddress = "1.2.3.4;id" }),
+		"user injection":   ok(func(r *DeployRequest) { r.SSHUser = "root;id" }),
+		"empty host":       ok(func(r *DeployRequest) { r.IPAddress = "" }),
 	}
 	for name, req := range cases {
 		if err := ValidateDeployRequest(req); err == nil {
@@ -219,5 +230,33 @@ func TestValidPayloadStillAccepted(t *testing.T) {
 
 	if w.Code == http.StatusBadRequest {
 		t.Fatalf("valid payload must not be rejected with 400 (body: %s)", w.Body.String())
+	}
+}
+
+func TestValidateHost(t *testing.T) {
+	valid := []string{"127.0.0.1", "10.0.0.5", "::1", "vps.example.com", "2001:db8::1"}
+	for _, h := range valid {
+		if err := ValidateHost(h); err != nil {
+			t.Errorf("expected %q valid, got: %v", h, err)
+		}
+	}
+	invalid := []string{"", "1.2.3.4;id", "host name", "$(id)", "1.2.3.4 && curl evil", "-bad.example.com"}
+	for _, h := range invalid {
+		if err := ValidateHost(h); err == nil {
+			t.Errorf("expected %q rejected, but it passed", h)
+		}
+	}
+}
+
+func TestValidateSSHUser(t *testing.T) {
+	for _, u := range []string{"root", "deployer", "deploy_user", "u1"} {
+		if err := ValidateSSHUser(u); err != nil {
+			t.Errorf("expected %q valid, got: %v", u, err)
+		}
+	}
+	for _, u := range []string{"", "root;id", "Root", "a b", "$(id)", "root\nid"} {
+		if err := ValidateSSHUser(u); err == nil {
+			t.Errorf("expected %q rejected, but it passed", u)
+		}
 	}
 }

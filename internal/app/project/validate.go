@@ -2,6 +2,7 @@ package project
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 
@@ -22,11 +23,16 @@ var (
 	repoRefPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9._-]{1,100}$`)
 
 	// imageRefPattern: referensi image registry yang aman untuk shell
-	// (huruf kecil, angka, titik, garis bawah, garis miring, strip) dengan tag opsional.
-	imageRefPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,253}(:[A-Za-z0-9._-]{1,128})?$`)
+	// (huruf kecil, angka, titik, garis bawah, garis miring, strip), dengan tag
+	// opsional dan digest opsional (@sha256:<64 hex>).
+	imageRefPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]{0,253}(:[A-Za-z0-9._-]{1,128})?(@sha256:[a-f0-9]{64})?$`)
 
-	// gitRefPattern: nama branch/tag.
-	gitRefPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,255}$`)
+	// gitRefPattern: nama branch/tag. "+" sah di git (mis. feature/x+y) dan aman
+	// di URL API maupun YAML; karakter shell seperti ; $ ` & | tetap ditolak.
+	gitRefPattern = regexp.MustCompile(`^[A-Za-z0-9._/+-]{1,255}$`)
+
+	// sshUserPattern: nama user POSIX yang wajar.
+	sshUserPattern = regexp.MustCompile(`^[a-z_][a-z0-9_.-]{0,31}$`)
 
 	// shaPattern: commit SHA pendek atau penuh.
 	shaPattern = regexp.MustCompile(`^[a-f0-9]{7,40}$`)
@@ -119,9 +125,39 @@ func ValidateDomain(domain string) error {
 	return nil
 }
 
+// ValidateHost memastikan host target berupa alamat IP atau hostname yang sah.
+// Nilai ini ikut masuk ke template workflow YAML, jadi bentuknya harus ketat.
+func ValidateHost(host string) error {
+	if host == "" {
+		return util.NewBadRequestError("Host is required", nil)
+	}
+	if net.ParseIP(host) != nil {
+		return nil
+	}
+	if len(host) <= maxDomainLen && domainPattern.MatchString(strings.ToLower(host)) {
+		return nil
+	}
+	return util.NewBadRequestError(fmt.Sprintf("Invalid host %q; expected an IP address or hostname", host), nil)
+}
+
+// ValidateSSHUser memastikan nama user SSH wajar sebelum dipakai di perintah
+// dan di template workflow.
+func ValidateSSHUser(user string) error {
+	if !sshUserPattern.MatchString(user) {
+		return util.NewBadRequestError(fmt.Sprintf("Invalid SSH user %q", user), nil)
+	}
+	return nil
+}
+
 // ValidateDeployRequest menjalankan seluruh pemeriksaan sebelum job deploy
 // dibuat, supaya input buruk ditolak sebagai 400 dan tidak pernah menyentuh SSH.
 func ValidateDeployRequest(req DeployRequest) error {
+	if err := ValidateHost(req.IPAddress); err != nil {
+		return err
+	}
+	if err := ValidateSSHUser(req.SSHUser); err != nil {
+		return err
+	}
 	if err := ValidateRepoRef(req.GitHubRepo); err != nil {
 		return err
 	}

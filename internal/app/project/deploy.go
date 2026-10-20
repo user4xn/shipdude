@@ -68,7 +68,8 @@ func (s *service) performHotSwap(proj *model.Project, srv *model.Server, image s
 	}
 
 	job.AddLog("[Caddy] Regenerating Caddyfile configurations...")
-	if err := s.regenerateCaddyfile(sshClient, srv, proj, targetPort); err != nil {
+	previousCaddyfile, err := s.regenerateCaddyfile(sshClient, srv, proj, targetPort)
+	if err != nil {
 		return fmt.Errorf("caddyfile regeneration failed: %w", err)
 	}
 
@@ -79,7 +80,18 @@ func (s *service) performHotSwap(proj *model.Project, srv *model.Server, image s
 		// Container lama SENGAJA dipertahankan: kalau reload gagal, Caddy masih
 		// memakai konfigurasi lama yang menunjuk port lama. Menghapus container
 		// lama di sini akan membuat situs mati total sementara job melaporkan sukses.
-		return fmt.Errorf("caddy reload failed; container lama dipertahankan dan deploy dibatalkan: %w", err)
+		//
+		// Dua hal lain harus dibereskan: Caddyfile di disk sudah menunjuk port baru,
+		// jadi ia dipulihkan ke isi sebelumnya (kalau tidak, reload berikutnya dari
+		// project lain akan mempromosikan container yang belum lolos), dan container
+		// baru dibuang karena belum pernah menerima trafik.
+		if previousCaddyfile != "" {
+			restoreCmd := fmt.Sprintf("echo '%s' | base64 -d | sudo tee /var/lib/shipdude/caddy/Caddyfile >/dev/null", previousCaddyfile)
+			_ = client.RunCommandStream(sshClient, restoreCmd, func(string) {})
+			_ = client.RunCommandStream(sshClient, "docker cp /var/lib/shipdude/caddy/Caddyfile shipdude-caddy:/etc/caddy/Caddyfile", func(string) {})
+		}
+		_ = client.RunCommandStream(sshClient, fmt.Sprintf("docker rm -f %q", newContainer), func(string) {})
+		return fmt.Errorf("caddy reload failed; Caddyfile dipulihkan, container baru dibuang, container lama tetap melayani: %w", err)
 	}
 
 	if oldContainer != "" && oldContainer != newContainer {
@@ -164,10 +176,10 @@ func (s *service) waitHealthy(sshClient *ssh.Client, port int, job *socket.Job) 
 }
 
 // regenerateCaddyfile rewrites the ingress configuration mapping domains to live containers.
-func (s *service) regenerateCaddyfile(sshClient *ssh.Client, srv *model.Server, target *model.Project, targetPort int) error {
+func (s *service) regenerateCaddyfile(sshClient *ssh.Client, srv *model.Server, target *model.Project, targetPort int) (string, error) {
 	projects, err := s.project.FindAll(context.Background())
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	cfg := client.IngressConfig{ServerIP: srv.IPAddress}
@@ -188,14 +200,20 @@ func (s *service) regenerateCaddyfile(sshClient *ssh.Client, srv *model.Server, 
 		})
 	}
 
+	// Simpan isi lama (base64) supaya bisa dipulihkan kalau reload gagal.
+	var previous string
+	_ = client.RunCommandStream(sshClient, "sudo cat /var/lib/shipdude/caddy/Caddyfile 2>/dev/null | base64 -w0", func(line string) {
+		previous += strings.TrimSpace(line)
+	})
+
 	encoded := base64.StdEncoding.EncodeToString([]byte(client.RenderCaddyfile(cfg)))
 	writeCmd := fmt.Sprintf("echo '%s' | base64 -d | sudo tee /var/lib/shipdude/caddy/Caddyfile >/dev/null", encoded)
 	if err := client.RunCommandStream(sshClient, writeCmd, func(string) {}); err != nil {
-		return err
+		return previous, err
 	}
 
 	_ = client.RunCommandStream(sshClient, "docker cp /var/lib/shipdude/caddy/Caddyfile shipdude-caddy:/etc/caddy/Caddyfile", func(string) {})
-	return nil
+	return previous, nil
 }
 
 func toSSHCreds(srv *model.Server) client.SSHCredentials {

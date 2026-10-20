@@ -155,6 +155,12 @@ func TestHotSwap_CaddyReloadFailureKeepsOldContainer(t *testing.T) {
 	if !rec.contains("caddy reload") {
 		t.Error("reload caddy harus tetap dicoba")
 	}
+	if !rec.contains(`rm -f "shipdude-my-website-8081"`) {
+		t.Error("container baru harus dibuang saat reload gagal (belum pernah menerima trafik)")
+	}
+	if !rec.contains("base64 -d | sudo tee /var/lib/shipdude/caddy/Caddyfile") {
+		t.Error("Caddyfile harus dipulihkan ke isi sebelumnya saat reload gagal")
+	}
 }
 
 // TestHotSwap_HealthCheck500Fails memastikan aplikasi yang membalas 500 tidak
