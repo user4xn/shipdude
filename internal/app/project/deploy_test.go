@@ -97,7 +97,7 @@ func setupHotSwap(t *testing.T, healthCode string, reloadFails bool) (*service, 
 	withMockHook(t, func(cmd string) (string, uint32, bool) {
 		rec.record(cmd)
 		switch {
-		case strings.Contains(cmd, "sudo cat /var/lib/shipdude/caddy/Caddyfile"):
+		case strings.Contains(cmd, "sudo base64 -w0 /var/lib/shipdude/caddy/Caddyfile"):
 			return "IyBvbGQgY2FkZHlmaWxlCg==", 0, true // base64("# old caddyfile\n")
 		case strings.Contains(cmd, "curl -s -o /dev/null -w"):
 			return healthCode, 0, true
@@ -253,7 +253,7 @@ func TestHotSwap_ImageBerbahayaTetapSatuArgumen(t *testing.T) {
 }
 
 // TestHotSwap_AbortsWhenCaddyfileCaptureFails menutup celah yang ditemukan QA:
-// kalau isi Caddyfile lama tidak bisa dibaca, jangan menulis yang baru sama
+// kalau file Caddyfile ADA tapi tidak bisa dibaca, jangan menulis yang baru sama
 // sekali, karena kegagalan reload tidak akan bisa dipulihkan.
 func TestHotSwap_AbortsWhenCaddyfileCaptureFails(t *testing.T) {
 	svc, proj, srv, rec := setupHotSwap(t, "200", false)
@@ -261,8 +261,10 @@ func TestHotSwap_AbortsWhenCaddyfileCaptureFails(t *testing.T) {
 	mockCommandHook = func(cmd string) (string, uint32, bool) {
 		rec.record(cmd)
 		switch {
-		case strings.Contains(cmd, "sudo cat /var/lib/shipdude/caddy/Caddyfile"):
-			return "permission denied\n", 1, true
+		case strings.Contains(cmd, "sudo base64 -w0 /var/lib/shipdude/caddy/Caddyfile"):
+			return "base64: permission denied\n", 1, true
+		case strings.Contains(cmd, "sudo test -f /var/lib/shipdude/caddy/Caddyfile"):
+			return "", 0, true // file ada
 		case strings.Contains(cmd, "curl -s -o /dev/null -w"):
 			return "200", 0, true
 		default:
@@ -278,7 +280,42 @@ func TestHotSwap_AbortsWhenCaddyfileCaptureFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "Caddyfile") {
 		t.Errorf("expected Caddyfile error, got: %v", err)
 	}
+	if strings.Contains(err.Error(), "%!w") {
+		t.Errorf("pesan error memuat artefak fmt %%!w: %v", err)
+	}
 	if rec.contains("base64 -d | sudo tee /var/lib/shipdude/caddy/Caddyfile") {
 		t.Error("Caddyfile tidak boleh ditulis kalau cadangan gagal diambil")
+	}
+}
+
+// TestHotSwap_CaddyfileBelumAdaTetapDeploy memastikan file yang belum ada
+// (deploy pertama di VPS baru, atau file dihapus) tidak menggagalkan deploy:
+// tidak ada isi lama yang bisa hilang, jadi tidak ada yang perlu dicadangkan.
+func TestHotSwap_CaddyfileBelumAdaTetapDeploy(t *testing.T) {
+	svc, proj, srv, rec := setupHotSwap(t, "200", false)
+
+	mockCommandHook = func(cmd string) (string, uint32, bool) {
+		rec.record(cmd)
+		switch {
+		case strings.Contains(cmd, "sudo base64 -w0 /var/lib/shipdude/caddy/Caddyfile"):
+			return "base64: /var/lib/shipdude/caddy/Caddyfile: No such file or directory\n", 1, true
+		case strings.Contains(cmd, "sudo test -f /var/lib/shipdude/caddy/Caddyfile"):
+			return "", 1, true // file belum ada
+		case strings.Contains(cmd, "curl -s -o /dev/null -w"):
+			return "200", 0, true
+		default:
+			return "", 0, true
+		}
+	}
+
+	job := socket.NewJob("test-capture-missing")
+	if err := svc.performHotSwap(proj, srv, "ghcr.io/user4xn/my-website:abcdef1", job); err != nil {
+		t.Fatalf("deploy harus tetap jalan saat Caddyfile belum ada, got: %v", err)
+	}
+	if !rec.contains("base64 -d | sudo tee /var/lib/shipdude/caddy/Caddyfile") {
+		t.Error("Caddyfile baru harus ditulis saat file lama belum ada")
+	}
+	if !rec.contains("caddy reload") {
+		t.Error("caddy harus direload setelah menulis Caddyfile")
 	}
 }

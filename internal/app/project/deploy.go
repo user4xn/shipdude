@@ -201,25 +201,54 @@ func (s *service) regenerateCaddyfile(sshClient *ssh.Client, srv *model.Server, 
 	}
 
 	// Simpan isi lama (base64) supaya bisa dipulihkan kalau reload gagal.
-	// Kalau isi lama tidak terbaca, jangan menulis Caddyfile baru sama sekali:
-	// tanpa cadangan, kegagalan reload akan meninggalkan konfigurasi menunjuk
-	// container yang sudah dibuang.
-	var previous string
-	captureErr := client.RunCommandStream(sshClient, "sudo cat /var/lib/shipdude/caddy/Caddyfile 2>/dev/null | base64 -w0", func(line string) {
-		previous += strings.TrimSpace(line)
-	})
-	if captureErr != nil || previous == "" {
+	// `sudo base64 -w0 FILE` membaca file secara langsung, tanpa pipeline, jadi
+	// exit code pembacaan tidak tertelan perintah di ujung pipe.
+	previous, captureErr := captureCaddyfile(sshClient)
+	if captureErr != nil {
+		// File ADA tapi tidak terbaca: tanpa cadangan, kegagalan reload akan
+		// meninggalkan konfigurasi menunjuk container yang sudah dibuang.
 		return "", fmt.Errorf("failed to capture existing Caddyfile; refusing to overwrite without a backup: %w", captureErr)
 	}
 
 	encoded := base64.StdEncoding.EncodeToString([]byte(client.RenderCaddyfile(cfg)))
-	writeCmd := fmt.Sprintf("echo '%s' | base64 -d | sudo tee /var/lib/shipdude/caddy/Caddyfile >/dev/null", encoded)
+	writeCmd := fmt.Sprintf("echo '%s' | base64 -d | sudo tee %s >/dev/null", encoded, caddyfilePath)
 	if err := client.RunCommandStream(sshClient, writeCmd, func(string) {}); err != nil {
 		return previous, err
 	}
 
-	_ = client.RunCommandStream(sshClient, "docker cp /var/lib/shipdude/caddy/Caddyfile shipdude-caddy:/etc/caddy/Caddyfile", func(string) {})
+	_ = client.RunCommandStream(sshClient, "docker cp "+caddyfilePath+" shipdude-caddy:"+caddyInContainer, func(string) {})
 	return previous, nil
+}
+
+const (
+	// caddyfilePath adalah sumber kebenaran konfigurasi ingress di VPS.
+	caddyfilePath = "/var/lib/shipdude/caddy/Caddyfile"
+	// caddyInContainer adalah path yang dibaca Caddy di dalam container.
+	caddyInContainer = "/etc/caddy/Caddyfile"
+)
+
+// captureCaddyfile mengembalikan isi Caddyfile aktif dalam base64.
+//
+// File yang BELUM ADA bukan kegagalan: tidak ada isi lama yang bisa hilang,
+// jadi deploy pertama di VPS baru tetap boleh menulis konfigurasi. Yang harus
+// menggagalkan deploy adalah file yang ada tapi tidak bisa dibaca, karena
+// reload yang gagal sesudahnya tidak akan bisa dipulihkan.
+func captureCaddyfile(sshClient *ssh.Client) (string, error) {
+	var raw string
+	readErr := client.RunCommandStream(sshClient, fmt.Sprintf("sudo base64 -w0 %s 2>/dev/null", caddyfilePath), func(line string) {
+		raw += strings.TrimSpace(line)
+	})
+	if readErr == nil {
+		return raw, nil
+	}
+
+	// Bedakan "belum ada" (aman, lanjut tanpa cadangan) dari "ada tapi tidak
+	// terbaca" (gagal tertutup).
+	existsErr := client.RunCommandStream(sshClient, fmt.Sprintf("sudo test -f %s", caddyfilePath), func(string) {})
+	if existsErr != nil {
+		return "", nil
+	}
+	return "", readErr
 }
 
 func toSSHCreds(srv *model.Server) client.SSHCredentials {
