@@ -5,37 +5,51 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+
 	"shipdude/internal/db"
-	"shipdude/internal/server"
+	"shipdude/internal/factory"
+	apphttp "shipdude/internal/http"
+	"shipdude/pkg/config"
+	"shipdude/pkg/util"
 )
 
 //go:embed web/*
 var staticFS embed.FS
 
 func main() {
-	// Extract the web directory subdirectory from our embedded filesystem
-	subFS, err := fs.Sub(staticFS, "web")
+	// Load optional .env overrides before reading any configuration.
+	_ = util.LoadDotEnv(".env")
+
+	staticHandler, err := staticHandler()
 	if err != nil {
 		log.Fatalf("failed to locate embedded static assets sub-directory: %v", err)
 	}
 
-	// Initialize SQLite Database Store
-	dbStore, err := db.NewStore("./config/shipdude.db")
+	database, err := db.Connect(config.DBPath())
 	if err != nil {
 		log.Fatalf("failed to initialize database: %v", err)
 	}
-	defer dbStore.Close()
+	defer database.Close()
 
-	staticHandler := http.FileServer(http.FS(subFS))
-	router := server.SetupRouter(staticHandler, dbStore)
+	f := factory.NewFactory(database)
+	router := apphttp.NewRouter(f, staticHandler)
 
-	port := ":8080"
+	address := ":" + config.AppPort()
 	log.Printf("=============================================")
-	log.Printf("  ShipDude Web Portal Starting...             ")
-	log.Printf("  Access local portal at http://localhost%s  ", port)
+	log.Printf("  %s Web Portal Starting...             ", config.AppName())
+	log.Printf("  Access local portal at http://localhost%s  ", address)
 	log.Printf("=============================================")
 
-	if err := http.ListenAndServe(port, router); err != nil {
-		log.Fatalf("Failed to bind server to port %s: %v", port, err)
+	if err := http.ListenAndServe(address, router); err != nil {
+		log.Fatalf("failed to bind server to port %s: %v", address, err)
 	}
+}
+
+// staticHandler returns the embedded web directory as an HTTP handler.
+func staticHandler() (http.Handler, error) {
+	subFS, err := fs.Sub(staticFS, "web")
+	if err != nil {
+		return nil, err
+	}
+	return http.FileServer(http.FS(subFS)), nil
 }

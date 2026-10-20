@@ -2,6 +2,26 @@
 let githubRepos = [];
 let detectedStackInfo = null;
 
+// unwrap pulls the payload out of the uniform API envelope
+// ({ message, status, data }). Error envelopes carry no data, so the envelope
+// itself is returned in that case, letting callers read `message`/`error`.
+// Non-enveloped (legacy) responses are returned unchanged.
+function unwrap(payload) {
+    if (payload && typeof payload === 'object' && 'status' in payload && 'data' in payload) {
+        return payload.data !== null && payload.data !== undefined ? payload.data : payload;
+    }
+    return payload;
+}
+
+// errorMessage prefers the enveloped message, then the legacy error field.
+function errorMessage(payload, fallback) {
+    if (payload && typeof payload === 'object') {
+        return payload.message || payload.error || fallback;
+    }
+    return fallback;
+}
+
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
     checkLocalhostWebhookWarning();
@@ -66,7 +86,7 @@ async function checkSettings() {
     updateGitHubIndicator('checking');
     try {
         const response = await fetch('/api/v1/settings/github');
-        const settings = await response.json();
+        const settings = unwrap(await response.json());
 
         const banner = document.getElementById('github-unconfigured-banner');
         const oauthPrompt = document.getElementById('github-oauth-prompt');
@@ -104,14 +124,14 @@ async function checkGitHubLogin() {
             throw new Error('Failed to get profile');
         }
 
-        const user = await userResponse.json();
+        const user = unwrap(await userResponse.json());
         oauthPrompt.classList.add('hidden');
         updateGitHubIndicator('connected', user.login);
 
         // Fetch repo list for autocomplete cache
         const reposResponse = await fetch('/api/v1/github/repos');
         if (reposResponse.ok) {
-            githubRepos = await reposResponse.json();
+            githubRepos = unwrap(await reposResponse.json());
         }
     } catch (err) {
         console.error('Failed to list repos:', err);
@@ -152,7 +172,7 @@ async function loadLastVPSConnection() {
     try {
         const response = await fetch('/api/v1/vps/last-connection');
         if (!response.ok) return;
-        const data = await response.json();
+        const data = unwrap(await response.json());
         
         if (data.ip_address) {
             document.getElementById('ip_address').value = data.ip_address;
@@ -191,7 +211,7 @@ async function saveSettings() {
 
         const result = await response.json();
         if (!response.ok) {
-            throw new Error(result.error || 'Failed to save settings');
+            throw new Error(errorMessage(result, 'Failed to save settings'));
         }
 
         showToast('GitHub configuration updated successfully!', 'success');
@@ -306,7 +326,7 @@ async function probeVPS() {
 
         const result = await response.json();
         if (!response.ok) {
-            throw new Error(result.error || 'Server returned an error');
+            throw new Error(errorMessage(result, 'Server returned an error'));
         }
 
         if (result.connected) {
@@ -376,7 +396,7 @@ async function detectStack() {
 
         const result = await response.json();
         if (!response.ok) {
-            throw new Error(result.error || 'Failed to detect stack');
+            throw new Error(errorMessage(result, 'Failed to detect stack'));
         }
 
         detectedStackInfo = result;
@@ -531,7 +551,7 @@ async function triggerDeploy() {
 
         const result = await response.json();
         if (!response.ok) {
-            throw new Error(result.error || 'Failed to deploy project');
+            throw new Error(errorMessage(result, 'Failed to deploy project'));
         }
 
         showToast('Deployment config pipeline started!', 'success');
@@ -612,7 +632,7 @@ async function saveVPSConnectionManual() {
 
         const result = await response.json();
         if (!response.ok) {
-            throw new Error(result.error || 'Failed to save connection credentials');
+            throw new Error(errorMessage(result, 'Failed to save connection credentials'));
         }
 
         showToast('VPS credentials saved successfully!', 'success');
@@ -647,7 +667,7 @@ async function disconnectGitHub() {
 
         const result = await response.json();
         if (!response.ok) {
-            throw new Error(result.error || 'Failed to disconnect from GitHub');
+            throw new Error(errorMessage(result, 'Failed to disconnect from GitHub'));
         }
 
         showToast('Successfully disconnected from GitHub!', 'success');
@@ -683,7 +703,7 @@ async function fetchBranches(repo, defaultBranch = 'main') {
         if (!response.ok) {
             throw new Error('Failed to fetch branches');
         }
-        const branches = await response.json();
+        const branches = unwrap(await response.json());
         const select = document.getElementById('deploy_branch');
         if (!select) return;
         
@@ -758,7 +778,7 @@ async function loadProjects() {
         if (!response.ok) {
             throw new Error('Failed to load projects');
         }
-        const projects = await response.json();
+        const projects = unwrap(await response.json());
         const container = document.getElementById('projects-list-container');
         if (!container) return;
 
@@ -849,8 +869,8 @@ async function deleteProject(id) {
             method: 'DELETE'
         });
         if (!response.ok) {
-            const data = await response.json();
-            throw new Error(data.error || 'Failed to delete project');
+            const payload = await response.json();
+            throw new Error(errorMessage(payload, 'Failed to delete project'));
         }
         showToast('Project configuration deleted successfully', 'success');
         loadProjects();
@@ -906,7 +926,7 @@ async function provisionVPSPrompt() {
 
         const result = await response.json();
         if (!response.ok) {
-            throw new Error(result.error || 'Server provisioning initiation failed');
+            throw new Error(errorMessage(result, 'Server provisioning initiation failed'));
         }
 
         showToast('VPS Provisioning started! Streaming logs...', 'success');
@@ -945,7 +965,7 @@ async function rollbackProject(id) {
 
         const result = await response.json();
         if (!response.ok) {
-            throw new Error(result.error || 'Rollback execution failed');
+            throw new Error(errorMessage(result, 'Rollback execution failed'));
         }
 
         showToast('Rollback/Redeployment started! Streaming logs...', 'success');
@@ -1173,7 +1193,7 @@ async function controlContainer(action) {
         
         const result = await response.json();
         if (!response.ok) {
-            throw new Error(result.error || `Failed to ${targetAction} container`);
+            throw new Error(errorMessage(result, `Failed to ${targetAction} container`));
         }
         
         showToast(`Container ${targetAction} completed successfully!`, 'success');
