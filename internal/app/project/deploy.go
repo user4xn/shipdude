@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -39,7 +38,7 @@ func (s *service) performHotSwap(proj *model.Project, srv *model.Server, image s
 	s.authenticateRegistry(sshClient, proj, job)
 
 	job.AddLog(fmt.Sprintf("[Docker] Pulling image: %s...", image))
-	if err := client.RunCommandStream(sshClient, "docker pull "+image, func(line string) {
+	if err := client.RunCommandStream(sshClient, fmt.Sprintf("docker pull %q", image), func(line string) {
 		job.AddLog("[Docker] " + line)
 	}); err != nil {
 		return fmt.Errorf("docker pull failed: %w", err)
@@ -52,10 +51,10 @@ func (s *service) performHotSwap(proj *model.Project, srv *model.Server, image s
 	}
 
 	job.AddLog(fmt.Sprintf("[Docker] Removing pre-existing container %s if present...", newContainer))
-	_ = client.RunCommandStream(sshClient, "docker rm -f "+newContainer, func(string) {})
+	_ = client.RunCommandStream(sshClient, fmt.Sprintf("docker rm -f %q", newContainer), func(string) {})
 
 	job.AddLog(fmt.Sprintf("[Docker] Launching new container %s on port %d...", newContainer, targetPort))
-	runCmd := fmt.Sprintf("docker run -d --name %s --restart unless-stopped -p %d:%d -e PORT=%d %s",
+	runCmd := fmt.Sprintf("docker run -d --name %q --restart unless-stopped -p %d:%d -e PORT=%d %q",
 		newContainer, targetPort, proj.AppPort, proj.AppPort, image)
 	if err := client.RunCommandStream(sshClient, runCmd, func(line string) {
 		job.AddLog("[Docker] " + line)
@@ -63,9 +62,9 @@ func (s *service) performHotSwap(proj *model.Project, srv *model.Server, image s
 		return fmt.Errorf("docker run failed: %w", err)
 	}
 
-	if !s.waitHealthy(sshClient, targetPort, job) {
-		_ = client.RunCommandStream(sshClient, "docker rm -f "+newContainer, func(string) {})
-		return errors.New("container health check failed")
+	if err := s.waitHealthy(sshClient, targetPort, job); err != nil {
+		_ = client.RunCommandStream(sshClient, fmt.Sprintf("docker rm -f %q", newContainer), func(string) {})
+		return err
 	}
 
 	job.AddLog("[Caddy] Regenerating Caddyfile configurations...")
@@ -77,12 +76,15 @@ func (s *service) performHotSwap(proj *model.Project, srv *model.Server, image s
 	if err := client.RunCommandStream(sshClient, "docker exec shipdude-caddy caddy reload --config /etc/caddy/Caddyfile", func(line string) {
 		job.AddLog("[Caddy] " + line)
 	}); err != nil {
-		job.AddLog(fmt.Sprintf("[Warning] Caddy reload returned error: %s. Continuing...", err.Error()))
+		// Container lama SENGAJA dipertahankan: kalau reload gagal, Caddy masih
+		// memakai konfigurasi lama yang menunjuk port lama. Menghapus container
+		// lama di sini akan membuat situs mati total sementara job melaporkan sukses.
+		return fmt.Errorf("caddy reload failed; container lama dipertahankan dan deploy dibatalkan: %w", err)
 	}
 
 	if oldContainer != "" && oldContainer != newContainer {
 		job.AddLog(fmt.Sprintf("[Docker] Pruning old container %s...", oldContainer))
-		_ = client.RunCommandStream(sshClient, "docker rm -f "+oldContainer, func(string) {})
+		_ = client.RunCommandStream(sshClient, fmt.Sprintf("docker rm -f %q", oldContainer), func(string) {})
 	}
 
 	if err := s.project.UpdateActiveState(s.db(), proj.ID, targetPort, image); err != nil {
@@ -111,26 +113,54 @@ func (s *service) authenticateRegistry(sshClient *ssh.Client, proj *model.Projec
 	}
 }
 
-func (s *service) waitHealthy(sshClient *ssh.Client, port int, job *socket.Job) bool {
+// healthCheckInterval bisa diperpendek oleh test supaya tidak menunggu 2 detik
+// per percobaan.
+var healthCheckInterval = 2 * time.Second
+
+// healthCheckAttempts adalah jumlah percobaan sebelum deploy dinyatakan gagal.
+var healthCheckAttempts = 30
+
+// isHealthyStatus menganggap sehat hanya status HTTP 2xx dan 3xx. Nilai kosong
+// atau "000" (curl gagal konek) berarti belum siap; status 4xx/5xx berarti
+// aplikasi hidup tapi rusak, dan itu tidak boleh dipromosikan ke produksi.
+func isHealthyStatus(raw string) bool {
+	code := strings.TrimSpace(raw)
+	if len(code) > 3 {
+		code = code[len(code)-3:]
+	}
+	if len(code) != 3 {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if code[i] < '0' || code[i] > '9' {
+			return false
+		}
+	}
+	return code[0] == '2' || code[0] == '3'
+}
+
+func (s *service) waitHealthy(sshClient *ssh.Client, port int, job *socket.Job) error {
 	job.AddLog("[System] Waiting for application to accept HTTP connections...")
 
-	for i := 0; i < 30; i++ {
-		time.Sleep(2 * time.Second)
+	lastCode := ""
+	for i := 0; i < healthCheckAttempts; i++ {
+		time.Sleep(healthCheckInterval)
 
 		var httpCode string
-		_ = client.RunCommandStream(sshClient, fmt.Sprintf("curl -s -o /dev/null -w \"%%{http_code}\" http://localhost:%d/", port), func(line string) {
+		_ = client.RunCommandStream(sshClient, fmt.Sprintf("curl -s -o /dev/null -w \"%%{http_code}\" http://127.0.0.1:%d/", port), func(line string) {
 			httpCode = strings.TrimSpace(line)
 		})
+		lastCode = httpCode
 
-		if httpCode != "" && httpCode != "000" {
+		if isHealthyStatus(httpCode) {
 			job.AddLog(fmt.Sprintf("[System] Application responded with status: %s. Health check passed!", httpCode))
-			return true
+			return nil
 		}
-		job.AddLog(fmt.Sprintf("[System] Health check attempt %d/30: waiting for port %d to listen...", i+1, port))
+		job.AddLog(fmt.Sprintf("[System] Health check attempt %d/%d: status %q is not healthy yet...", i+1, healthCheckAttempts, httpCode))
 	}
 
-	job.AddLog("[Error] Health check timed out after 60s. Rolling back container launch...")
-	return false
+	job.AddLog("[Error] Health check gagal; container baru dibuang, container lama tetap melayani.")
+	return fmt.Errorf("container health check failed after %d attempts (last status: %q)", healthCheckAttempts, lastCode)
 }
 
 // regenerateCaddyfile rewrites the ingress configuration mapping domains to live containers.
